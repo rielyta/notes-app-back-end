@@ -1,80 +1,96 @@
-import NoteRepositories from '../repositories/note-repositories.js';
-import { InvariantError, NotFoundError } from '../../../exceptions/index.js';
-import AuthorizationError from '../../../exceptions/authorization-error.js';
-import response from '../../../utils/response.js';
+import { Pool } from 'pg';
+import { nanoid } from 'nanoid';
+import collaborationRepositories from '../../collaborations/repositories/collaboration-repositories.js';
 
-export const createNote = async (req, res, next) => {
-  const { title, body, tags } = req.validated;
-  const { id: owner } = req.user;
-
-  const note = await NoteRepositories.createNote({
-    title,
-    body,
-    tags,
-    owner,
-  });
-
-  if (!note) {
-    return next(new InvariantError('Catatan gagal ditambahkan'));
+class NoteRepositories {
+  constructor() {
+    this.pool = new Pool();
+    this.collaborationRepositories = collaborationRepositories;
   }
 
-  return response(res, 201, 'Catatan berhasil ditambahkan', note);
-};
+  async createNote({ title, body, tags }) {
+    const id = nanoid(16);
+    const createdAt = new Date().toISOString();
+    const updatedAt = createdAt;
 
-export const getNotes = async (req, res) => {
-  const { id: owner } = req.user;
-  const notes = await NoteRepositories.getNotes(owner);
-  return response(res, 200, 'Catatan sukses ditampilkan', notes);
-};
+    const query = {
+      text: 'INSERT INTO notes(id, title, body, tags, created_at, updated_at) VALUES($1, $2, $3, $4, $5, $6) RETURNING id, title, body, tags, created_at, updated_at',
+      values: [id, title, body, tags, createdAt, updatedAt],
+    };
 
-export const getNoteById = async (req, res, next) => {
-  const { id } = req.params;
-  const { id: owner } = req.user;
-
-  const isOwner = await NoteRepositories.verifyNoteOwner(id, owner);
-  if (!isOwner) {
-    return next(new AuthorizationError('Anda tidak berhak mengakses resource ini'));
+    const result = await this.pool.query(query);
+    return result.rows[0];
   }
 
-  const note = await NoteRepositories.getNoteById(id);
-  if (!note) {
-    return next(new NotFoundError('Catatan tidak ditemukan'));
+  async getNotes(owner) {
+    const query = {
+      text: `SELECT notes.* FROM notes
+             LEFT JOIN collaborations ON collaborations.note_id = notes.id
+             WHERE notes.owner = $1 OR collaborations.user_id = $1
+             GROUP BY notes.id`,
+      values: [owner],
+    };
+
+    const result = await this.pool.query(query);
+    return result.rows;
   }
 
-  return response(res, 200, 'Catatan sukses ditampilkan', note);
-};
+  async getNoteById(id) {
+    const query = {
+      text: `SELECT notes.*, users.username
+             FROM notes
+             LEFT JOIN users ON users.id = notes.owner
+             WHERE notes.id = $1`,
+      values: [id],
+    };
 
-export const editNoteById = async (req, res, next) => {
-  const { id } = req.params;
-  const { title, body, tags } = req.validated;
-  const { id: owner } = req.user;
-
-  const isOwner = await NoteRepositories.verifyNoteOwner(id, owner);
-  if (!isOwner) {
-    return next(new AuthorizationError('Anda tidak berhak mengakses resource ini'));
+    const result = await this.pool.query(query);
+    return result.rows[0];
   }
 
-  const note = await NoteRepositories.editNote({ id, title, body, tags });
-  if (!note) {
-    return next(new NotFoundError('Catatan tidak ditemukan'));
+  async editNote({ id, title, body, tags }) {
+    const updatedAt = new Date().toISOString();
+
+    const query = {
+      text: 'UPDATE notes SET title = $1, body = $2, tags = $3, updated_at = $4 WHERE id = $5 RETURNING id',
+      values: [title, body, tags, updatedAt, id],
+    };
+
+    const result = await this.pool.query(query);
+    return result.rows[0];
   }
 
-  return response(res, 200, 'Catatan berhasil diperbarui', note);
-};
+  async deleteNote(id) {
+    const query = {
+      text: 'DELETE FROM notes WHERE id = $1 RETURNING id',
+      values: [id],
+    };
 
-export const deleteNoteById = async (req, res, next) => {
-  const { id } = req.params;
-  const { id: owner } = req.user;
-
-  const isOwner = await NoteRepositories.verifyNoteOwner(id, owner);
-  if (!isOwner) {
-    return next(new AuthorizationError('Anda tidak berhak mengakses resource ini'));
+    const result = await this.pool.query(query);
+    return result.rows[0].id;
   }
 
-  const deletedNote = await NoteRepositories.deleteNote(id);
-  if (!deletedNote) {
-    return next(new NotFoundError('Catatan tidak ditemukan'));
+  async verifyNoteOwner(noteId, userId) {
+    const query = {
+      text: 'SELECT owner FROM notes WHERE id = $1',
+      values: [noteId],
+    };
+
+    const result = await this.pool.query(query);
+    if (!result.rows.length) return false;
+    return result.rows[0].owner === userId;
   }
 
-  return response(res, 200, 'Catatan berhasil dihapus', deletedNote);
-};
+  async verifyNoteAccess(noteId, userId) {
+    const ownerResult = await this.verifyNoteOwner(noteId, userId);
+
+    if (ownerResult) {
+      return ownerResult;
+    }
+
+    const result = await this.collaborationRepositories.verifyCollaborator(noteId, userId);
+    return result;
+  }
+}
+
+export default new NoteRepositories();

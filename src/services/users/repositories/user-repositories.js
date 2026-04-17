@@ -43,50 +43,36 @@ class UserRepositories {
   }
 
   async verifyUserCredential(username, password) {
-  const query = {
-    text: 'SELECT id, password FROM users WHERE username = $1',
-    values: [username],
-  };
+    const query = {
+      text: 'SELECT id, password FROM users WHERE username = $1',
+      values: [username],
+    };
 
-  const user = await this._pool.query(query);
+    const result = await this.pool.query(query);
 
-  if (!user) {
-    return null;
+    if (!result.rows.length) {
+      return null;
+    }
+
+    const { id, password: hashedPassword } = result.rows[0];
+    const isPasswordMatch = await bcrypt.compare(password, hashedPassword);
+
+    if (!isPasswordMatch) {
+      return null;
+    }
+
+    return id;
   }
 
-  const { id, password: hashedPassword } = user.rows[0];
-  const isPasswordNatch = await bcrypt.compare(password, hashedPassword);
+  async getUsersByUsername(username) {
+    const query = {
+      text: 'SELECT id, username, fullname FROM users WHERE username LIKE $1',
+      values: [`%${username}%`],
+    };
 
-  if (!isPasswordNatch) {
-    return null;
+    const result = await this.pool.query(query);
+    return result.rows;
   }
-
-  return id;
 }
-
-async verifyUserCredential(username, password) {
-  const query = {
-    text: 'SELECT id, password FROM users WHERE username = $1',
-    values: [username],
-  };
-
-  const user = await this._pool.query(query);
-
-  if (!user.rows.length) {
-    return null;
-  }
-
-  const { id, password: hashedPassword } = user.rows[0];
-  const isPasswordMatch = await bcrypt.compare(password, hashedPassword);
-
-  if (!isPasswordMatch) {
-    return null;
-  }
-
-  return id;
-}
-}
-
-
 
 export default new UserRepositories();
